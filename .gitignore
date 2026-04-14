@@ -1,0 +1,9 @@
+.idea/
+.cursor/
+__pycache__/
+*.py[cod]
+
+outputs/
+
+.DS_Store
+Thumbs.db
