@@ -127,6 +127,21 @@ data/raw/
 
 如果只想验证有标注评测，至少准备 `data/raw/boat2`。
 
+#### 数据集来源与版权说明
+
+本项目使用的 `boat2` 序列可从 VOT 官方公开数据集 VOT-TIR2016 获取。为避免数据版权和二次分发风险，本仓库不上传任何原始图像、标注压缩包或老师提供的整理版数据，只保留代码和结果展示图。
+
+官方入口：
+
+- VOT2016 数据集说明页：<https://www.votchallenge.net/vot2016/dataset.html>
+- VOT-TIR2016 数据集描述文件：<https://data.votchallenge.net/vot2016/tir/description.json>
+- `boat2` 标注包：<https://data.votchallenge.net/vot2016/tir/boat2.zip>
+- `boat2` 红外图像序列包：<https://data.votchallenge.net/sequences/6eaa8958bd2ef6cd761dc578399d8667783c4955229bb602011986de6844dbc175f27612200b49ab0f9cf3745ad35e11cf140d167d2f09e48a5421807795774f.zip>
+- `boat2` 预览图：<https://data.votchallenge.net/vot2016/tir/boat2.png>
+- `boat2` 预览动图：<https://data.votchallenge.net/vot2016/tir/boat2.gif>
+
+复现时可以从上述官方链接下载图像序列和标注文件，解压后放到 `data/raw/boat2`。官方属性文件后缀为 `.tag`，本项目本地整理版使用 `.label`；如果需要统计属性标签，可以将对应文件按下面的格式说明重命名。
+
 ### 1. 一次性运行全部数据目录
 
 ```bash
@@ -238,7 +253,7 @@ boat2/
 - `groundtruth.txt` 每一行对应一帧目标标注。
 - 每行由 8 个数字构成，表示目标四边形的四个顶点坐标。
 - 评测代码会自动把四边形转换成外接矩形框用于 IoU 计算。
-- `*.label` 文件是按帧存储的二值属性标签，可用于统计不同场景属性下的命中率。
+- `*.label` 文件是按帧存储的二值属性标签，可用于统计不同场景属性下的命中率；VOT 官方下载包中这些文件通常以 `.tag` 为后缀，可按名称对应重命名为 `.label`。
 
 ## 当前实现的优点与局限
 
