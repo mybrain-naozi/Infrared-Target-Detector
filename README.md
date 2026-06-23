@@ -12,7 +12,7 @@
 
 ## 效果预览
 
-以下结果来自当前仓库默认参数在 `data/raw/boat2` 和 `data/raw/others` 上的一次本地运行。
+以下结果来自当前默认参数在本地 `data/raw/boat2` 上的有标注评测，以及其他本地无标注目录上的批量检测运行。出于数据来源和体积考虑，本仓库不上传原始 `data/` 目录。
 
 | 数据集 | 帧数 | IoU 阈值 | Precision | Recall | F1 | TP | FP | FN |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -72,7 +72,7 @@ Infrared-Target-Detector/
 ├── README.md
 ├── requirements.txt
 ├── requirements-cn.txt
-├── run_project.py          # 在带标注数据集上运行检测与评测
+├── run_project.py          # 自动遍历数据目录；有标注则评测，无标注则批量检测
 ├── detect_others.py        # 对无标注图片批量检测
 ├── sample_and_detect.py    # 随机抽样并生成检测结果
 ├── sea_detector.py         # 核心检测器实现
@@ -80,11 +80,8 @@ Infrared-Target-Detector/
 ├── dataset_io.py           # 数据集和标签读取
 ├── image_io.py             # 兼容中文路径的读写工具
 ├── report_utils.py         # 联系图/总览图生成
-├── data/
-│   ├── raw/
-│   │   ├── boat2/          # 默认评测集（含标注）
-│   │   ├── others/         # 无标注测试图像
-│   │   └── data1/          # 可用于采样的附加数据
+├── data/                   # 本地数据目录，需自行准备，不随仓库上传
+│   ├── raw/                # 原始数据放置位置
 │   └── sampled/            # 抽样脚本生成的数据
 ├── outputs/                # 默认输出目录
 ├── docs/
@@ -115,7 +112,22 @@ pip install -r requirements-cn.txt
 
 ## 快速开始
 
-### 1. 在标注数据集上运行完整评测
+### 0. 准备本地数据
+
+仓库默认从 `data/raw` 读取数据，但 GitHub 版本不包含原始数据。请在本地按如下结构放置数据：
+
+```text
+data/raw/
+├── boat2/                  # 有标注数据，需包含 groundtruth.txt
+├── data1/                  # 可选：无标注附加图像
+├── others/                 # 可选：无标注测试图像
+├── 多样性数据/              # 可选：无标注多样场景图像
+└── 海天线上的目标/           # 可选：无标注海天线附近目标图像
+```
+
+如果只想验证有标注评测，至少准备 `data/raw/boat2`。
+
+### 1. 一次性运行全部数据目录
 
 ```bash
 python run_project.py
@@ -124,17 +136,28 @@ python run_project.py
 默认等价于：
 
 ```bash
-python run_project.py --dataset data/raw/boat2 --output outputs/runs/full_pipeline --iou 0.1
+python run_project.py --dataset data/raw --output outputs/runs/all_datasets --iou 0.1
 ```
+
+运行逻辑：
+
+- 如果子目录包含 `groundtruth.txt`，程序会执行完整评测并输出 Precision、Recall、F1 等指标。
+- 如果子目录没有标注文件，程序会执行批量检测并输出每张图的检测结果和预览图。
+- 当前 `data/raw` 下会自动处理 `boat2`、`data1`、`others`、`多样性数据`、`海天线上的目标`。
 
 运行完成后，典型输出包括：
 
-- `summary.md`：文字摘要
-- `overview.png`：指标总览图
-- `best_hits.png`：命中样例联系图
-- `misses.png`：漏检样例联系图
-- `false_alarms.png`：误检样例联系图
-- `visualizations/`：逐帧可视化结果
+- `all_datasets_summary.md`：全部数据集运行汇总
+- `boat2/summary.md`、`boat2/overview.png`：有标注数据集的评测结果
+- `data1/preview.png`、`others/preview.png` 等：无标注数据集的检测预览
+- 各子目录下的 `result_*.png` 或 `visualizations/`：逐帧可视化结果
+
+如果只想运行单个数据集，可以指定具体文件夹：
+
+```bash
+python run_project.py --dataset data/raw/boat2 --output outputs/runs/boat2_only
+python run_project.py --dataset data/raw/others --output outputs/runs/others_only
+```
 
 ### 2. 对无标注图像批量检测
 

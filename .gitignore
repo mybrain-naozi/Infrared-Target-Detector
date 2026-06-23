@@ -4,6 +4,7 @@ __pycache__/
 *.py[cod]
 
 outputs/
+data/
 
 .DS_Store
 Thumbs.db

@@ -72,6 +72,151 @@ def _status_for_frame(hit: bool, pred_count: int) -> str:
     return "miss"
 
 
+def _as_display_image(image: np.ndarray, normalize: bool = False) -> np.ndarray:
+    if image.ndim == 2:
+        if normalize and image.max() > image.min():
+            image = cv2.normalize(image, None, 0, 255, cv2.NORM_MINMAX)
+        return cv2.cvtColor(image.astype(np.uint8), cv2.COLOR_GRAY2BGR)
+    return image.copy()
+
+
+def _draw_guides(panel: np.ndarray, meta: Dict[str, int]) -> np.ndarray:
+    out = panel.copy()
+    horizon_y = int(meta.get("horizon_y", -1))
+    roi_start_y = int(meta.get("roi_start_y", -1))
+    if 0 <= horizon_y < out.shape[0]:
+        cv2.line(out, (0, horizon_y), (out.shape[1] - 1, horizon_y), (255, 128, 0), 1)
+    if 0 <= roi_start_y < out.shape[0]:
+        cv2.line(out, (0, roi_start_y), (out.shape[1] - 1, roi_start_y), (0, 255, 255), 1)
+    return out
+
+
+def _make_step_panel(
+    image: np.ndarray,
+    caption: str,
+    meta: Dict[str, int],
+    normalize: bool = False,
+    thumb_size: tuple[int, int] = (320, 256),
+) -> np.ndarray:
+    panel = _as_display_image(image, normalize=normalize)
+    panel = _draw_guides(panel, meta)
+    panel = cv2.resize(panel, thumb_size, interpolation=cv2.INTER_AREA)
+    canvas = np.full((thumb_size[1] + 34, thumb_size[0], 3), 245, dtype=np.uint8)
+    canvas[34:, :] = panel
+    cv2.putText(canvas, caption, (8, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (35, 35, 35), 1, cv2.LINE_AA)
+    return canvas
+
+
+def _write_step_sheet(
+    output_path: Path,
+    steps: Dict[str, np.ndarray],
+    final_vis: np.ndarray,
+    meta: Dict[str, int],
+) -> None:
+    labels = [
+        ("01_original", "1 Original", False),
+        ("02_row_brightness_adjusted", "2 Row adjusted", False),
+        ("03_search_band", "3 Search band", False),
+        ("04_local_peak_mask", "4 Local peak mask", False),
+        ("05_tophat_response", "5 Top-hat response", True),
+        ("06_tophat_mask", "6 Top-hat mask", False),
+        ("07_fused_candidate_mask", "7 Fused mask", False),
+        ("08_cleaned_candidate_mask", "8 Cleaned mask", False),
+    ]
+    panels = [
+        _make_step_panel(steps[key], caption, meta, normalize=normalize)
+        for key, caption, normalize in labels
+        if key in steps
+    ]
+    panels.append(_make_step_panel(final_vis, "9 Final boxes", meta))
+
+    cols = 3
+    rows = int(np.ceil(len(panels) / cols))
+    panel_h, panel_w = panels[0].shape[:2]
+    canvas = np.full((rows * panel_h, cols * panel_w, 3), 235, dtype=np.uint8)
+    for idx, panel in enumerate(panels):
+        r = idx // cols
+        c = idx % cols
+        canvas[r * panel_h : (r + 1) * panel_h, c * panel_w : (c + 1) * panel_w] = panel
+    write_image(output_path, canvas)
+
+
+def _write_individual_step_images(
+    output_dir: Path,
+    steps: Dict[str, np.ndarray],
+    final_vis: np.ndarray,
+    meta: Dict[str, int],
+) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    exports = [
+        ("01_original.png", "01_original", False, False),
+        ("02_row_brightness_adjusted.png", "02_row_brightness_adjusted", False, False),
+        ("03_horizon_and_roi.png", "01_original", False, True),
+        ("04_search_band.png", "03_search_band", False, False),
+        ("05_local_peak_mask.png", "04_local_peak_mask", False, False),
+        ("06_tophat_response.png", "05_tophat_response", True, False),
+        ("07_tophat_mask.png", "06_tophat_mask", False, False),
+        ("08_fused_candidate_mask.png", "07_fused_candidate_mask", False, False),
+        ("09_cleaned_candidate_mask.png", "08_cleaned_candidate_mask", False, False),
+    ]
+    for filename, key, normalize, draw_guides in exports:
+        if key not in steps:
+            continue
+        image = _as_display_image(steps[key], normalize=normalize)
+        if draw_guides:
+            image = _draw_guides(image, meta)
+        write_image(output_dir / filename, image)
+    write_image(output_dir / "10_final_detection.png", final_vis)
+    _write_step_sheet(output_dir / "00_step_sheet.png", steps, final_vis, meta)
+
+
+def _write_best_step_exports(
+    output_dir: Path,
+    selected_records: Sequence[Dict[str, object]],
+    images: Sequence[Path],
+    gts: Sequence[Box],
+    detector: SeaSurfaceDetector,
+) -> str:
+    paper_dir = output_dir / "paper_step_images"
+    paper_dir.mkdir(parents=True, exist_ok=True)
+    summary_lines = [
+        "# Best step images",
+        "",
+        "| rank | frame | image | best_iou | folder |",
+        "| --- | ---: | --- | ---: | --- |",
+    ]
+
+    for rank, record in enumerate(selected_records, start=1):
+        idx = int(record["frame"])
+        img_path = images[idx]
+        img = read_image(img_path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            continue
+        norm = detector.initialize_image(img)
+        mask, meta, steps = detector.detect_steps(norm)
+        preds = detector.mask_to_boxes(mask)
+        gt = gts[idx]
+        biou = best_iou(preds, gt)
+
+        final_vis = read_image(Path(str(record["vis_path"])), cv2.IMREAD_COLOR)
+        if final_vis is None:
+            final_vis = cv2.cvtColor(norm, cv2.COLOR_GRAY2BGR)
+            for p in preds:
+                cv2.rectangle(final_vis, (p[0], p[1]), (p[2], p[3]), (0, 0, 255), 1)
+            cv2.rectangle(final_vis, (gt[0], gt[1]), (gt[2], gt[3]), (0, 255, 0), 1)
+            final_vis = _draw_guides(final_vis, meta)
+
+        safe_iou = f"{biou:.3f}".replace(".", "p")
+        frame_dir = paper_dir / f"rank{rank}_frame{idx:04d}_{img_path.stem}_iou{safe_iou}"
+        _write_individual_step_images(frame_dir, steps, final_vis, meta)
+        summary_lines.append(
+            f"| {rank} | {idx} | {img_path.name} | {biou:.3f} | `{frame_dir.name}` |"
+        )
+
+    (paper_dir / "selected_frames.md").write_text("\n".join(summary_lines), encoding="utf-8")
+    return str(paper_dir)
+
+
 def _draw_metric_bar(
     canvas: np.ndarray,
     label: str,
@@ -217,10 +362,16 @@ def evaluate_folder(
     output_dir: Path,
     cfg: DetectorConfig,
     iou_thr: float = 0.1,
+    save_steps: bool = False,
+    step_limit: int = 12,
+    paper_step_count: int = 0,
 ) -> Dict[str, object]:
     reset_dir(output_dir)
     vis_dir = output_dir / "visualizations"
     vis_dir.mkdir(parents=True, exist_ok=True)
+    step_dir = output_dir / "step_visualizations"
+    if save_steps:
+        step_dir.mkdir(parents=True, exist_ok=True)
 
     images = list_images(dataset_dir)
     gts = read_groundtruth(dataset_dir / "groundtruth.txt")
@@ -233,6 +384,7 @@ def evaluate_folder(
     tp = fp = fn = 0
     ious_tp: List[float] = []
     frame_records: List[Dict[str, object]] = []
+    saved_step_count = 0
 
     for idx in range(n):
         img_path = images[idx]
@@ -241,7 +393,12 @@ def evaluate_folder(
             continue
 
         norm = detector.initialize_image(img)
-        mask, meta = detector.detect(norm)
+        should_save_steps = save_steps and (step_limit <= 0 or saved_step_count < step_limit)
+        if should_save_steps:
+            mask, meta, steps = detector.detect_steps(norm)
+        else:
+            mask, meta = detector.detect(norm)
+            steps = {}
         preds = detector.mask_to_boxes(mask)
         gt = gts[idx]
         biou = best_iou(preds, gt)
@@ -274,6 +431,11 @@ def evaluate_folder(
 
         vis_path = vis_dir / f"{idx:04d}_{img_path.name}"
         write_image(vis_path, vis)
+        step_path = None
+        if should_save_steps:
+            step_path = step_dir / f"{idx:04d}_{img_path.stem}_steps.png"
+            _write_step_sheet(step_path, steps, vis, meta)
+            saved_step_count += 1
 
         frame_records.append(
             {
@@ -285,6 +447,7 @@ def evaluate_folder(
                 "hit": hit,
                 "status": _status_for_frame(hit, len(preds)),
                 "vis_path": str(vis_path),
+                "step_path": str(step_path) if step_path else "",
                 "horizon_y": meta["horizon_y"],
                 "roi_start_y": meta["roi_start_y"],
             }
@@ -332,6 +495,16 @@ def evaluate_folder(
         key=lambda r: (int(r["pred_count"]), -float(r["best_iou"])),
         reverse=True,
     )[:9]
+    paper_step_dir = ""
+    if paper_step_count > 0:
+        paper_records = best_hits[:paper_step_count]
+        if not paper_records:
+            paper_records = sorted(
+                frame_records,
+                key=lambda r: float(r["best_iou"]),
+                reverse=True,
+            )[:paper_step_count]
+        paper_step_dir = _write_best_step_exports(output_dir, paper_records, images, gts, detector)
 
     best_hits_path = output_dir / "best_hits.png"
     misses_path = output_dir / "misses.png"
@@ -360,6 +533,8 @@ def evaluate_folder(
         "summary": str(summary_path),
         "overview": str(overview_path),
         "visualizations": str(vis_dir),
+        "step_visualizations": str(step_dir) if save_steps else "",
+        "paper_step_images": paper_step_dir,
         "best_hits": str(best_hits_path),
         "misses": str(misses_path),
         "false_alarms": str(false_alarms_path),

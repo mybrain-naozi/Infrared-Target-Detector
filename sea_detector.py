@@ -99,14 +99,20 @@ class SeaSurfaceDetector:
         threshold = min(float(np.mean(values) + self.cfg.l_factor * np.std(values)), 255.0)
         return (peak & (roi >= threshold)).astype(np.uint8) * 255
 
-    def _tophat_mask(self, roi: np.ndarray) -> np.ndarray:
+    def _tophat_response_and_mask(self, roi: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         k = max(3, int(self.cfg.tophat_kernel))
         if k % 2 == 0:
             k += 1
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
         th = cv2.morphologyEx(roi, cv2.MORPH_TOPHAT, kernel).astype(np.float32)
         thr = float(np.percentile(th, self.cfg.tophat_percentile))
-        return (th >= thr).astype(np.uint8) * 255
+        response = np.clip(th, 0, 255).astype(np.uint8)
+        mask = (th >= thr).astype(np.uint8) * 255
+        return response, mask
+
+    def _tophat_mask(self, roi: np.ndarray) -> np.ndarray:
+        _, mask = self._tophat_response_and_mask(roi)
+        return mask
 
     def _clean_mask(self, mask: np.ndarray, ref_img: np.ndarray) -> np.ndarray:
         if self.cfg.opening_kernel > 1:
@@ -150,34 +156,72 @@ class SeaSurfaceDetector:
                 out[labels == i] = 255
         return out
 
-    def detect(self, gray: np.ndarray) -> tuple[np.ndarray, Dict[str, int]]:
+    def detect_steps(self, gray: np.ndarray) -> tuple[np.ndarray, Dict[str, int], Dict[str, np.ndarray]]:
         horizon_y = self.estimate_horizon(gray)
         roi_start = self.resolve_roi_start(gray, horizon_y)
         adj = self.row_average_adjust(gray)
+        steps: Dict[str, np.ndarray] = {
+            "01_original": gray.copy(),
+            "02_row_brightness_adjusted": adj.copy(),
+        }
         roi = adj[roi_start:, :]
         if roi.size == 0:
-            return np.zeros_like(adj, dtype=np.uint8), {
+            empty = np.zeros_like(adj, dtype=np.uint8)
+            steps["03_search_band"] = empty.copy()
+            steps["04_local_peak_mask"] = empty.copy()
+            steps["05_tophat_response"] = empty.copy()
+            steps["06_tophat_mask"] = empty.copy()
+            steps["07_fused_candidate_mask"] = empty.copy()
+            steps["08_cleaned_candidate_mask"] = empty.copy()
+            return empty, {
                 "horizon_y": horizon_y,
                 "roi_start_y": roi_start,
                 "band_height": 0,
-            }
+            }, steps
 
         band_h = int(np.clip(self.cfg.horizon_band_height, 1, roi.shape[0]))
         band = roi[:band_h, :]
         peak_mask = self._peak_mask(band)
-        th_mask = self._tophat_mask(band)
+        tophat_response, th_mask = self._tophat_response_and_mask(band)
         mask = cv2.bitwise_and(peak_mask, th_mask)
-        mask = self._clean_mask(mask, band)
+        cleaned_mask = self._clean_mask(mask, band)
+
+        search_band = np.zeros_like(adj, dtype=np.uint8)
+        search_band[roi_start : roi_start + band_h, :] = band
+        peak_full = np.zeros_like(adj, dtype=np.uint8)
+        peak_full[roi_start : roi_start + band_h, :] = peak_mask
+        tophat_response_full = np.zeros_like(adj, dtype=np.uint8)
+        tophat_response_full[roi_start : roi_start + band_h, :] = tophat_response
+        tophat_mask_full = np.zeros_like(adj, dtype=np.uint8)
+        tophat_mask_full[roi_start : roi_start + band_h, :] = th_mask
+        fused_full = np.zeros_like(adj, dtype=np.uint8)
+        fused_full[roi_start : roi_start + band_h, :] = mask
+        cleaned_full = np.zeros_like(adj, dtype=np.uint8)
+        cleaned_full[roi_start : roi_start + band_h, :] = cleaned_mask
+        steps.update(
+            {
+                "03_search_band": search_band,
+                "04_local_peak_mask": peak_full,
+                "05_tophat_response": tophat_response_full,
+                "06_tophat_mask": tophat_mask_full,
+                "07_fused_candidate_mask": fused_full,
+                "08_cleaned_candidate_mask": cleaned_full,
+            }
+        )
 
         padded = np.zeros_like(roi, dtype=np.uint8)
-        padded[:band_h, :] = mask
+        padded[:band_h, :] = cleaned_mask
         out = np.zeros_like(adj, dtype=np.uint8)
         out[roi_start:, :] = padded
         return out, {
             "horizon_y": int(horizon_y),
             "roi_start_y": int(roi_start),
             "band_height": int(band_h),
-        }
+        }, steps
+
+    def detect(self, gray: np.ndarray) -> tuple[np.ndarray, Dict[str, int]]:
+        mask, meta, _ = self.detect_steps(gray)
+        return mask, meta
 
     def detect_mask(self, gray: np.ndarray) -> np.ndarray:
         mask, _ = self.detect(gray)
